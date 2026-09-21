@@ -35,8 +35,8 @@ class LlmNode(Agent):
     def __init__(self, name: str, transport, model: str, **kw) -> None:
         super().__init__(name, transport, **kw)
         self.model = model
-        self.on("llm.generate", self.generate)
-        self.on("llm.health", self.health)
+        self.on("generate", self.generate)
+        self.on("health", self.health)
 
     async def on_start(self) -> None:
         # aici ai incarca efectiv greutatile: Llama(model_path=...)
@@ -77,17 +77,18 @@ class Planner(Agent):
         trace = Envelope().msg_id
         print(f"\n[planner] obiectiv: {obiectiv} (trace={trace[:8]})")
 
-        # 1) RPC simplu, cu timeout + retry pe grupul de noduri LLM
-        res = await self.request("svc.llm", "llm.generate",
+        # 1) RPC simplu. ATENTIE: retries=0 la generare — o reincercare ar porni
+        #    o a doua decodare pe acelasi GPU (4GB VRAM nu iarta).
+        res = await self.ask("llm", "generate",
                                  {"prompt": obiectiv, "max_tokens": 32},
-                                 timeout=10, retries=2, trace_id=trace)
+                                 timeout=10, retries=0, trace_id=trace)
         print(f"[planner] rezultat: {res['text']}")
         print(f"[planner] {res['tokens']} tokeni in {res['latency_ms']} ms "
               f"pe {res['model']}")
 
         # 2) aceeasi delegare, dar consumand tokenii pe masura ce apar
         print("[planner] streaming:", end=" ", flush=True)
-        async for chunk in self.request_stream("svc.llm", "llm.generate",
+        async for chunk in self.stream("llm", "generate",
                                                {"prompt": obiectiv,
                                                 "max_tokens": 4},
                                                trace_id=trace):
@@ -96,15 +97,14 @@ class Planner(Agent):
 
         # 3) eroare de validare: nu se reincearca, se propaga imediat
         try:
-            await self.request("svc.llm", "llm.generate", {}, timeout=5, retries=2)
+            await self.ask("llm", "generate", {}, timeout=5, retries=2)
         except RemoteError as exc:
             print(f"[planner] eroare asteptata: {exc} (retryable={exc.retryable})")
 
         # 4) actiune neinregistrata: nimeni nu e abonat -> timeout (nu unknown_action,
         #    fiindca abonarea se face per actiune; vezi README)
         try:
-            await self.request("svc.llm", "llm.embed", {"text": "x"},
-                               timeout=3, retries=0)
+            await self.ask("llm", "embed", {"text": "x"}, timeout=3, retries=0)
         except RemoteError as exc:
             print(f"[planner] eroare asteptata: {exc}")
 
@@ -118,10 +118,11 @@ async def main() -> None:
                         format="%(levelname)s %(name)s: %(message)s")
     bus = InMemoryTransport()          # <- NatsTransport() / MqttTransport()
 
-    llm = LlmNode("llm-jetson", bus, model="qwen2.5-3b-q4_k_m", max_concurrency=2)
+    llm = LlmNode("llm-jetson", bus, model="qwen2.5-3b-q4_k_m",
+                  domain="llm", max_concurrency=2)
     planner = Planner("planner", bus)
 
-    await llm.start(groups=["llm"])    # ascult si pe svc.llm.*
+    await llm.start()                  # ascult pe svc.llm.generate / .health
     await planner.start()
 
     await planner.subscribe_events(

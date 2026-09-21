@@ -28,14 +28,14 @@ Schimbarea brokerului = o linie: `NatsTransport()` → `MqttTransport()` → `In
 | Subiect | Rol |
 |---|---|
 | `agent.<name>.rpc.<action>` | cerere către un agent anume |
-| `svc.<capability>.<action>` | cerere către un grup de noduri echivalente (ex. `svc.llm.llm.generate`) |
+| `svc.<domeniu>.<actiune>` | delegare către un domeniu, load balancing între instanțe (ex. `svc.llm.generate`) |
 | `inbox.<name>.<msg_id>` | inbox unic; aici ajung REPLY / ERROR / PROGRESS |
 | `event.<domain>.<name>` | evenimente fan-out, fără răspuns |
 | `dlq.<name>` | mesaje care au eșuat definitiv |
 
-La NATS, `svc.llm.*` cu **queue group** dă load balancing real între noduri.
-La MQTT folosește `$share/llm/svc/llm/#` (shared subscriptions, MQTT 5) și
-înlocuiește `.` cu `/` în numele topicurilor.
+Contractul complet: `docs/CONTRACT_agentbus.md`. Queue groups NATS și
+`$share/` MQTT sunt aplicate automat pe `svc.*`, niciodată pe `inbox.*`.
+Traducerea `.`↔`/` o face `MqttTransport`, agentul vorbește un singur dialect.
 
 ## Corelarea request-reply
 

@@ -35,12 +35,12 @@ log = logging.getLogger("worker.qwen")
 
 
 class LocalQwenWorker(Agent):
-    """Expune `llm.generate` si `llm.health` pe `svc.llm` si pe agent.<name>.rpc.*"""
+    """Expune `svc.llm.generate` si `svc.llm.health` (plus agent.<name>.rpc.*)."""
 
     def __init__(self, name: str, transport, **kw) -> None:
         super().__init__(name, transport, **kw)
-        self.on("llm.generate", self.generate)
-        self.on("llm.health", self.health)
+        self.on("generate", self.generate)
+        self.on("health", self.health)
         self._http = None
         self._system = ""
 
@@ -152,7 +152,7 @@ class LocalQwenWorker(Agent):
 
 
 def build_transport():
-    kind = os.getenv("AGENTBUS_TRANSPORT", "nats")
+    kind = os.getenv("AGENTBUS_TRANSPORT", "mqtt")   # MQTT e brokerul meu principal
     if kind == "memory":
         return InMemoryTransport()
     if kind == "mqtt":
@@ -173,26 +173,26 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    worker = LocalQwenWorker(args.name, build_transport(),
+    worker = LocalQwenWorker(args.name, build_transport(), domain="llm",
                              max_concurrency=args.concurrency)
-    await worker.start(groups=["llm"])
+    await worker.start()
 
     if args.selftest:
         class Probe(Agent):
             pass
         probe = Probe("probe", worker.transport)
         await probe.start()
-        print("health:", await probe.request("svc.llm", "llm.health", {}, timeout=10))
+        print("health:", await probe.ask("llm", "health", {}, timeout=10))
         print("stream:", end=" ", flush=True)
-        async for c in probe.request_stream("svc.llm", "llm.generate",
-                                            {"prompt": "Spune salut in 5 cuvinte."}):
+        async for c in probe.stream("llm", "generate",
+                                    {"prompt": "Spune salut in 5 cuvinte."}):
             print(c.get("delta") or f"\nFINAL: {c}", end="", flush=True)
         print()
         await probe.stop()
         await worker.stop()
         return
 
-    log.info("ascult pe svc.llm.llm.generate — Ctrl+C pentru oprire")
+    log.info("ascult pe svc.llm.generate — Ctrl+C pentru oprire")
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, asyncio.CancelledError):

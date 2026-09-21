@@ -28,17 +28,19 @@ class RemoteError(RuntimeError):
 class Agent(ABC):
     """Clasa de baza pentru orice nod din sistem.
 
-    Conventii de subiecte:
-        agent.<name>.rpc.<action>   - cereri directionate catre un agent
-        svc.<capability>.<action>   - cereri catre un grup (load balancing)
+    Conventii de subiecte (contract Standard_Lucru_AI):
+        svc.<domeniu>.<actiune>     - delegare catre domeniu (load balancing)
+        agent.<name>.rpc.<action>   - cerere catre o instanta anume
         inbox.<name>.<msg_id>       - inbox unic pentru raspunsuri
         event.<domain>.<name>       - evenimente publicate (fan-out)
         dlq.<name>                  - dead letter queue
     """
 
     def __init__(self, name: str, transport: Transport, *,
-                 max_concurrency: int = 4) -> None:
+                 domain: str = "", max_concurrency: int = 4) -> None:
         self.name = name
+        # domeniul de serviciu: determina `svc.<domeniu>.<actiune>`
+        self.domain = domain
         self.transport = transport
         self._handlers: dict[str, ActionHandler] = {}
         self._pending: dict[str, asyncio.Future] = {}
@@ -62,22 +64,23 @@ class Agent(ABC):
     def inbox(self) -> str:
         return f"inbox.{self.name}.>"
 
-    async def start(self, *, groups: list[str] | None = None) -> None:
+    async def start(self, *, domains: list[str] | None = None) -> None:
         if self._started:
             return
         await self.transport.connect()
         # inbox propriu pentru raspunsuri (corelarea request-reply)
         await self.transport.subscribe(self.inbox, self._on_inbox)
         # un subiect RPC per actiune expusa
+        served = [d for d in ([self.domain] + (domains or [])) if d]
         for action in self._handlers:
             await self.transport.subscribe(
                 f"agent.{self.name}.rpc.{action}", self._on_request)
-            for grp in groups or []:
+            for dom in served:
                 await self.transport.subscribe(
-                    f"svc.{grp}.{action}", self._on_request)
+                    f"svc.{dom}.{action}", self._on_request)
         self._started = True
-        log.info("agent %s pornit (actiuni: %s)", self.name,
-                 ", ".join(self._handlers) or "-")
+        log.info("agent %s pornit (domenii: %s | actiuni: %s)", self.name,
+                 ", ".join(served) or "-", ", ".join(self._handlers) or "-")
         await self.on_start()
 
     async def on_start(self) -> None:
@@ -154,6 +157,20 @@ class Agent(ABC):
                 log.warning("reincercare %s (%s) in %.2fs", action, last, delay)
                 await asyncio.sleep(delay)
         raise last  # type: ignore[misc]
+
+    async def ask(self, domain: str, action: str, payload: dict[str, Any],
+                  **kw) -> dict[str, Any]:
+        """Delegare catre domeniu: publica pe `svc.<domain>.<action>`."""
+        return await self.request(f"svc.{domain}", action, payload, **kw)
+
+    async def ask_agent(self, name: str, action: str, payload: dict[str, Any],
+                        **kw) -> dict[str, Any]:
+        """Cerere catre o instanta anume: `agent.<name>.rpc.<action>`."""
+        return await self.request(f"agent.{name}.rpc", action, payload, **kw)
+
+    def stream(self, domain: str, action: str, payload: dict[str, Any], **kw):
+        """Varianta de streaming catre domeniu."""
+        return self.request_stream(f"svc.{domain}", action, payload, **kw)
 
     async def request_stream(self, subject: str, action: str,
                              payload: dict[str, Any], *,
